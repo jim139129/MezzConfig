@@ -9,10 +9,12 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.channels.FileChannel;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileTime;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,18 +27,39 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class ConfigFileTransactionTest {
 	@Test
-	public void successfulCommitReplacesAndCreatesFilesAndRemovesBackups(@TempDir Path tempDir) throws IOException {
+	public void successfulCommitReplacesChangedFilesAndKeepsUnchangedFiles(@TempDir Path tempDir) throws IOException {
 		Path existing = Files.writeString(tempDir.resolve("existing.ini"), "original");
+		Path unchanged = Files.writeString(tempDir.resolve("unchanged.ini"), "unchanged" + System.lineSeparator());
+		Files.setLastModifiedTime(unchanged, FileTime.fromMillis(1_600_000_000_000L));
+		FileTime originalTime = Files.getLastModifiedTime(unchanged);
 		Path created = tempDir.resolve("created.ini");
 		var outputs = new LinkedHashMap<Path, List<String>>();
 		outputs.put(existing, List.of("replacement"));
+		outputs.put(unchanged, List.of("unchanged"));
 		outputs.put(created, List.of("created"));
 
 		ConfigFileTransaction.write(outputs, Set.of(created));
 
 		assertEquals("replacement" + System.lineSeparator(), Files.readString(existing));
+		assertEquals("unchanged" + System.lineSeparator(), Files.readString(unchanged));
+		assertEquals(originalTime, Files.getLastModifiedTime(unchanged));
 		assertEquals("created" + System.lineSeparator(), Files.readString(created));
-		assertDirectoryContains(tempDir, existing, created);
+		assertDirectoryContains(tempDir, existing, unchanged, created);
+	}
+
+	@Test
+	public void requiredAbsentTargetsAreRejectedEvenWhenContentsMatch(@TempDir Path tempDir) throws IOException {
+		Path existing = Files.writeString(tempDir.resolve("existing.ini"), "original");
+		Path reserved = Files.writeString(tempDir.resolve("reserved.ini"), "reserved" + System.lineSeparator());
+		var outputs = new LinkedHashMap<Path, List<String>>();
+		outputs.put(existing, List.of("replacement"));
+		outputs.put(reserved, List.of("reserved"));
+
+		assertThrows(FileAlreadyExistsException.class, () -> ConfigFileTransaction.write(outputs, Set.of(reserved)));
+
+		assertEquals("original", Files.readString(existing));
+		assertEquals("reserved" + System.lineSeparator(), Files.readString(reserved));
+		assertDirectoryContains(tempDir, existing, reserved);
 	}
 
 	@Test
@@ -55,6 +78,25 @@ public class ConfigFileTransactionTest {
 		assertFalse(Files.exists(created));
 		assertFalse(Files.exists(invalid));
 		assertDirectoryContains(tempDir, existing);
+	}
+
+	@Test
+	@EnabledOnOs(OS.WINDOWS)
+	@Timeout(10)
+	public void unchangedLockedTargetDoesNotBlockOtherWrites(@TempDir Path tempDir) throws IOException {
+		Path unchanged = Files.writeString(tempDir.resolve("unchanged.ini"), "unchanged" + System.lineSeparator());
+		Path created = tempDir.resolve("created.ini");
+		var outputs = new LinkedHashMap<Path, List<String>>();
+		outputs.put(unchanged, List.of("unchanged"));
+		outputs.put(created, List.of("created"));
+
+		try (var lock = FileChannel.open(unchanged, StandardOpenOption.READ, ExtendedOpenOption.NOSHARE_DELETE)) {
+			ConfigFileTransaction.write(outputs, Set.of(created));
+		}
+
+		assertEquals("unchanged" + System.lineSeparator(), Files.readString(unchanged));
+		assertEquals("created" + System.lineSeparator(), Files.readString(created));
+		assertDirectoryContains(tempDir, unchanged, created);
 	}
 
 	@Test

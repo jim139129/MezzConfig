@@ -167,7 +167,8 @@ abstract class ValidateFabricPublication : DefaultTask() {
         val requiredEntries = setOf(
             "net/mezzdev/config/fabric/ConfigFabric.class",
             "net/mezzdev/config/registration/ConfigProvider.class",
-            "net/mezzdev/config/minecraft/MinecraftConfigRuntime.class"
+            "net/mezzdev/config/minecraft/MinecraftConfigRuntime.class",
+            "net/mezzdev/config/modshade/net/mezzdev/atomicfile/AtomicFiles.class"
         )
         ZipFile(fabricJar).use { archive ->
             for (requiredEntry in requiredEntries) {
@@ -192,6 +193,7 @@ abstract class ValidateForgePublication : DefaultTask() {
             "net/mezzdev/config/forge/ConfigForgeNetwork.class",
             "net/mezzdev/config/registration/ConfigProvider.class",
             "net/mezzdev/config/minecraft/MinecraftConfigRuntime.class",
+            "net/mezzdev/config/modshade/net/mezzdev/atomicfile/AtomicFiles.class",
             "net/mezzdev/config/modshade/net/mezzdev/deduplicatingrunner/DeduplicatingRunner.class",
             "net/mezzdev/config/modshade/net/mezzdev/filewatcher/FileWatcher.class"
         )

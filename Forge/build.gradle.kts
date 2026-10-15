@@ -15,6 +15,7 @@ val configModId: String by extra
 val jspecifyVersion: String by extra
 val configModGroup: String by extra
 val forgeTestModId: String by extra
+val atomicFileVersion: String by extra
 val deduplicatingRunnerVersion: String by extra
 val fileWatcherVersion: String by extra
 group = configModGroup
@@ -134,6 +135,7 @@ tasks.named("runServerSmokeTest") {
 }
 
 dependencies {
+    add("additionalRuntimeClasspath", "net.mezzdev:atomicfile:$atomicFileVersion")
     add("additionalRuntimeClasspath", "net.mezzdev:filewatcher:$fileWatcherVersion")
     add("additionalRuntimeClasspath", "net.mezzdev:deduplicating-runner:$deduplicatingRunnerVersion")
 }

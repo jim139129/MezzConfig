@@ -1,5 +1,7 @@
 package net.mezzdev.config.file;
 
+import net.mezzdev.atomicfile.AtomicFiles;
+import net.mezzdev.atomicfile.StagedFile;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
@@ -21,8 +23,8 @@ public final class ConfigFileTransaction {
 		Map<Path, ? extends List<? extends CharSequence>> outputs,
 		Set<Path> requiredAbsentTargets
 	) throws IOException {
-		Deque<StagedFile> stagedFiles = new ArrayDeque<>();
-		List<CommittedFile> committedFiles = new ArrayList<>();
+		Deque<PreparedFile> stagedFiles = new ArrayDeque<>();
+		List<PreparedFile> committedFiles = new ArrayList<>();
 		Set<Path> normalizedTargets = new HashSet<>();
 		Set<Path> normalizedRequiredAbsentTargets = new HashSet<>();
 		for (Path path : requiredAbsentTargets) {
@@ -36,59 +38,60 @@ public final class ConfigFileTransaction {
 					throw new IllegalArgumentException("A file transaction cannot write the same target more than once: " + target);
 				}
 				boolean requiredAbsent = normalizedRequiredAbsentTargets.contains(target);
-				stagedFiles.add(stage(target, entry.getValue(), requiredAbsent));
+				PreparedFile stagedFile = stage(target, entry.getValue(), requiredAbsent);
+				if (stagedFile != null) {
+					stagedFiles.add(stagedFile);
+				}
 			}
 
 			while (!stagedFiles.isEmpty()) {
-				committedFiles.add(stagedFiles.getFirst().commit());
+				PreparedFile stagedFile = stagedFiles.getFirst();
+				stagedFile.commit();
+				committedFiles.add(stagedFile);
 				stagedFiles.removeFirst();
 			}
 		} catch (IOException | RuntimeException | Error failure) {
 			rollback(committedFiles, failure);
 			throw failure;
 		} finally {
-			for (StagedFile stagedFile : stagedFiles) {
+			for (PreparedFile stagedFile : stagedFiles) {
 				stagedFile.cleanup();
 			}
 		}
-		for (CommittedFile committedFile : committedFiles) {
+		for (PreparedFile committedFile : committedFiles) {
 			committedFile.cleanup();
 		}
 	}
 
-	private static StagedFile stage(
+	private static @Nullable PreparedFile stage(
 		Path target,
 		List<? extends CharSequence> contents,
 		boolean requiredAbsent
 	) throws IOException {
-		ConfigFileUtil.validateReadableContents(contents);
+		byte[] bytes = ConfigFileUtil.serializeLines(contents);
 		if (requiredAbsent && Files.exists(target)) {
 			throw new FileAlreadyExistsException(target.toString());
 		}
-		Path parent = target.getParent();
-		if (parent == null) {
-			parent = Path.of(".").toAbsolutePath().normalize();
-		}
-		Files.createDirectories(parent);
-
-		Path stagedOutput = Files.createTempFile(parent, ".mezz-config-transaction-", ".tmp");
-		Path rollbackFile = null;
+		StagedFile stagedOutput = AtomicFiles.stage(target, bytes, ConfigFileUtil.WRITE_OPTIONS);
+		StagedFile rollbackFile = null;
 		try {
-			ConfigFileUtil.writeTempFile(stagedOutput, contents);
-			if (Files.exists(target)) {
-				rollbackFile = Files.createTempFile(parent, ".mezz-config-rollback-", ".tmp");
-				ConfigFileUtil.copyToTempFile(target, rollbackFile);
+			if (!requiredAbsent && stagedOutput.isUnchanged()) {
+				stagedOutput.close();
+				return null;
 			}
-			return new StagedFile(target, stagedOutput, rollbackFile, requiredAbsent);
+			if (Files.exists(target)) {
+				rollbackFile = AtomicFiles.snapshot(target, ConfigFileUtil.WRITE_OPTIONS);
+			}
+			return new PreparedFile(target, stagedOutput, rollbackFile, requiredAbsent);
 		} catch (IOException | RuntimeException | Error failure) {
 			try {
-				ConfigFileUtil.deleteIfExists(stagedOutput);
+				stagedOutput.close();
 			} catch (IOException cleanupFailure) {
 				failure.addSuppressed(cleanupFailure);
 			}
 			if (rollbackFile != null) {
 				try {
-					ConfigFileUtil.deleteIfExists(rollbackFile);
+					rollbackFile.close();
 				} catch (IOException cleanupFailure) {
 					failure.addSuppressed(cleanupFailure);
 				}
@@ -101,7 +104,7 @@ public final class ConfigFileTransaction {
 		return path.toAbsolutePath().normalize();
 	}
 
-	private static void rollback(List<CommittedFile> committedFiles, Throwable failure) {
+	private static void rollback(List<PreparedFile> committedFiles, Throwable failure) {
 		for (int index = committedFiles.size() - 1; index >= 0; index--) {
 			try {
 				committedFiles.get(index).rollback();
@@ -112,41 +115,34 @@ public final class ConfigFileTransaction {
 		}
 	}
 
-	private static void deleteQuietly(@Nullable Path path) {
-		if (path == null) {
+	private static void closeQuietly(@Nullable StagedFile stagedFile) {
+		if (stagedFile == null) {
 			return;
 		}
 		try {
-			ConfigFileUtil.deleteIfExists(path);
+			stagedFile.close();
 		} catch (IOException ignored) {}
 	}
 
-	private record StagedFile(Path target, Path stagedOutput, @Nullable Path rollbackFile, boolean requiredAbsent) {
-		private CommittedFile commit() throws IOException {
+	private record PreparedFile(Path target, StagedFile stagedOutput, @Nullable StagedFile rollbackFile, boolean requiredAbsent) {
+		private void commit() throws IOException {
 			if (requiredAbsent && Files.exists(target)) {
 				throw new FileAlreadyExistsException(target.toString());
 			}
-			ConfigFileUtil.moveAtomicReplace(stagedOutput, target);
-			return new CommittedFile(target, rollbackFile);
+			stagedOutput.commit();
 		}
 
-		private void cleanup() {
-			deleteQuietly(stagedOutput);
-			deleteQuietly(rollbackFile);
-		}
-	}
-
-	private record CommittedFile(Path target, @Nullable Path rollbackFile) {
 		private void rollback() throws IOException {
 			if (rollbackFile != null) {
-				ConfigFileUtil.moveAtomicReplace(rollbackFile, target);
+				rollbackFile.commit();
 			} else {
-				ConfigFileUtil.deleteIfExists(target);
+				AtomicFiles.deleteIfExists(target);
 			}
 		}
 
 		private void cleanup() {
-			deleteQuietly(rollbackFile);
+			closeQuietly(stagedOutput);
+			closeQuietly(rollbackFile);
 		}
 	}
 }

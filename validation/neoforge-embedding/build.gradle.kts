@@ -52,6 +52,7 @@ val validateEmbeddedRuntime = tasks.register("validateEmbeddedRuntime") {
             "net/mezzdev/config/api/Configs.class",
             "net/mezzdev/config/registration/ConfigProvider.class",
             "net/mezzdev/config/minecraft/MinecraftConfigRuntime.class",
+            "net/mezzdev/config/modshade/net/mezzdev/atomicfile/AtomicFiles.class",
             "net/mezzdev/config/modshade/net/mezzdev/filewatcher/FileWatcher.class",
             "net/mezzdev/config/modshade/net/mezzdev/deduplicatingrunner/DeduplicatingRunner.class",
             "META-INF/services/net.mezzdev.config.api.Configs\$IConfigProvider"

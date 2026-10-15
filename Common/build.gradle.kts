@@ -58,6 +58,7 @@ val targetMinecraftVersion = providers.gradleProperty("minecraftVersion").get()
 val configModId: String by extra
 val configModGroup: String by extra
 val modJavaVersion: String by extra
+val atomicFileVersion: String by extra
 val deduplicatingRunnerVersion: String by extra
 val fileWatcherVersion: String by extra
 val jetbrainsAnnotationsVersion: String by extra
@@ -115,6 +116,9 @@ val deduplicatingRunnerLicense by configurations.creating {
 dependencies {
     fileWatcherLicense("mezz:FileWatcher:$fileWatcherVersion")
     deduplicatingRunnerLicense("mezz:DeduplicatingRunner:$deduplicatingRunnerVersion")
+    modShadeImplementation("net.mezzdev:atomicfile:$atomicFileVersion") {
+        isTransitive = false
+    }
     modShadeImplementation("net.mezzdev:deduplicating-runner:$deduplicatingRunnerVersion") {
         isTransitive = false
     }
@@ -241,6 +245,7 @@ val shadedDependencyLicenses = copySpec {
 }
 
 modShade {
+    copyDependencyLicenses.set(true)
     shadeJar().configure {
         with(shadedDependencyLicenses)
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE

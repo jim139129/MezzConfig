@@ -1,6 +1,7 @@
 package net.mezzdev.config.file;
 
 import com.sun.nio.file.ExtendedOpenOption;
+import net.mezzdev.atomicfile.AtomicFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledOnOs;
@@ -20,6 +21,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +38,73 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ConfigFileUtilTest {
+	@Test
+	public void identicalBackupNeedsNoWritePermission(@TempDir Path tempDir) throws Exception {
+		Path source = Files.writeString(tempDir.resolve("config.ini"), "original");
+		Path backup = ConfigFileUtil.backUpFile(source);
+		FileTime modified = Files.getLastModifiedTime(backup);
+
+		try (var protection = ConfigFileWriteProtection.protect(source)) {
+			assertEquals(backup, ConfigFileUtil.backUpFile(source));
+		}
+		assertEquals("original", Files.readString(backup));
+		assertEquals(modified, Files.getLastModifiedTime(backup));
+		assertFalse(Files.exists(ConfigFileUtil.getBackupPath(source, 2)));
+	}
+
+	@Test
+	@EnabledOnOs({OS.LINUX, OS.MAC})
+	public void backupsPreserveReadOnlyPermissionsAndModificationTime(@TempDir Path tempDir) throws IOException {
+		Path source = Files.writeString(tempDir.resolve("config.ini"), "original");
+		FileTime modified = FileTime.fromMillis(1_600_000_000_000L);
+		var permissions = PosixFilePermissions.fromString("r--r-----");
+		Files.setLastModifiedTime(source, modified);
+		Files.setPosixFilePermissions(source, permissions);
+
+		Path backup = ConfigFileUtil.backUpFile(source);
+		ConfigFileUtil.backUpFile(source);
+
+		assertEquals("original", Files.readString(backup));
+		assertEquals(modified, Files.getLastModifiedTime(backup));
+		assertEquals(permissions, Files.getPosixFilePermissions(backup));
+		assertEquals(permissions, Files.getPosixFilePermissions(source));
+		assertFalse(Files.exists(ConfigFileUtil.getBackupPath(source, 2)));
+		try (var files = Files.list(tempDir)) {
+			assertEquals(Set.of(source, backup), files.collect(java.util.stream.Collectors.toSet()));
+		}
+	}
+
+	@Test
+	@EnabledOnOs({OS.LINUX, OS.MAC})
+	public void savePreservesOpenReaders(@TempDir Path tempDir) throws Exception {
+		Path target = Files.writeString(tempDir.resolve("config.ini"), "old");
+		try (var reader = Files.newInputStream(target)) {
+			String fingerprint = ConfigFileUtil.writeUsingTempFileAndGetFingerprint(target, List.of("new"));
+
+			assertEquals("old", new String(reader.readAllBytes(), StandardCharsets.UTF_8));
+			assertEquals("new" + System.lineSeparator(), Files.readString(target));
+			assertEquals(ConfigFileReader.read(target).fingerprint(), fingerprint);
+		}
+		try (var files = Files.list(tempDir)) {
+			assertEquals(List.of(target), files.toList());
+		}
+	}
+
+	@Test
+	public void saveCreatesParentsOnTheTargetsFileSystem(@TempDir Path tempDir) throws Exception {
+		try (var archive = FileSystems.newFileSystem(tempDir.resolve("config.zip"), Map.of("create", "true"))) {
+			Path target = archive.getPath("/nested/config.ini");
+			ConfigFileUtil.writeUsingTempFile(target, List.of("old"));
+			String fingerprint = ConfigFileUtil.writeUsingTempFileAndGetFingerprint(target, List.of("café ☃"));
+
+			assertEquals("café ☃" + System.lineSeparator(), Files.readString(target));
+			assertEquals(ConfigFileReader.read(target).fingerprint(), fingerprint);
+			try (var files = Files.list(target.getParent())) {
+				assertEquals(List.of(target), files.toList());
+			}
+		}
+	}
+
 	@ParameterizedTest
 	@ValueSource(booleans = {false, true})
 	@EnabledOnOs({OS.LINUX, OS.MAC})
@@ -145,30 +214,27 @@ public class ConfigFileUtilTest {
 	@Test
 	@EnabledOnOs(OS.WINDOWS)
 	@Timeout(10)
-	public void stagedWriteWaitsForAScannerThatDeniesWriteSharing(@TempDir Path tempDir) throws Exception {
+	public void saveWaitsForAScannerThatDeniesDeleteSharing(@TempDir Path tempDir) throws Exception {
 		Path target = Files.writeString(tempDir.resolve("config.ini"), "old");
-		Path staged = Files.createTempFile(tempDir, "staged-", ".tmp");
-		byte[] bytes = "complete replacement".getBytes(StandardCharsets.UTF_8);
 		var executor = Executors.newSingleThreadExecutor();
 		try {
 			Future<?> save;
-			// Model a scanner winning the race between createTempFile's close and the writer's reopen.
-			try (var scanner = FileChannel.open(staged, StandardOpenOption.READ, ExtendedOpenOption.NOSHARE_WRITE)) {
+			try (var scanner = FileChannel.open(target, StandardOpenOption.READ, ExtendedOpenOption.NOSHARE_DELETE)) {
 				CountDownLatch started = new CountDownLatch(1);
 				save = executor.submit(() -> {
 					started.countDown();
-					ConfigFileUtil.writeTempFile(staged, bytes);
-					ConfigFileUtil.moveAtomicReplace(staged, target);
+					ConfigFileUtil.writeUsingTempFile(target, List.of("complete replacement"));
 					return null;
 				});
 				assertTrue(started.await(5, TimeUnit.SECONDS));
 				assertThrows(TimeoutException.class, () -> save.get(100, TimeUnit.MILLISECONDS));
 				assertEquals("old", Files.readString(target));
-				assertEquals(0, Files.size(staged));
 			}
 			save.get(5, TimeUnit.SECONDS);
-			assertEquals("complete replacement", Files.readString(target));
-			assertFalse(Files.exists(staged));
+			assertEquals("complete replacement" + System.lineSeparator(), Files.readString(target));
+			try (var files = Files.list(tempDir)) {
+				assertEquals(List.of(target), files.toList());
+			}
 		} finally {
 			executor.shutdownNow();
 			assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
@@ -187,7 +253,7 @@ public class ConfigFileUtilTest {
 				CountDownLatch started = new CountDownLatch(1);
 				cleanup = executor.submit(() -> {
 					started.countDown();
-					ConfigFileUtil.deleteIfExists(staged);
+					AtomicFiles.deleteIfExists(staged);
 					return null;
 				});
 				assertTrue(started.await(5, TimeUnit.SECONDS));

@@ -14,6 +14,7 @@ val configModId: String by extra
 val jspecifyVersion: String by extra
 val configModGroup: String by extra
 val forgeTestModId: String by extra
+val atomicFileVersion: String by extra
 val deduplicatingRunnerVersion: String by extra
 val fileWatcherVersion: String by extra
 group = configModGroup
@@ -87,6 +88,7 @@ dependencies {
     compileOnly(commonSources["api"].output)
     compileOnly("org.jspecify:jspecify:$jspecifyVersion")
     compileOnly("org.jetbrains:annotations:26.1.0")
+    modShadeImplementation("net.mezzdev:atomicfile:$atomicFileVersion") { isTransitive = false }
     modShadeImplementation("net.mezzdev:deduplicating-runner:$deduplicatingRunnerVersion") { isTransitive = false }
     modShadeImplementation("net.mezzdev:filewatcher:$fileWatcherVersion") { isTransitive = false }
 }
@@ -148,6 +150,7 @@ tasks.named<Jar>("sourcesJar") {
 val shadedJar = modShade.shadeJar()
 val shadedSourcesJar = modShade.shadeSourcesJar()
 modShade {
+    copyDependencyLicenses.set(true)
     shadedJar.configure { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
     shadedSourcesJar.configure { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
 }
